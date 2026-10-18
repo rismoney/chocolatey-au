@@ -16,7 +16,7 @@ param(
     # Open one pull request per package from the "<Branch>-<package>" branches
     [switch]$BranchPerPackage,
 
-    # Use updated packages instead of pushed ones; set it when the Git plugin runs with Force
+    # With BranchPerPackage, use updated packages instead of pushed ones; set it when the Git plugin runs with Force
     [switch]$Force,
 
     # Target Git branch for the GitHub pull request
@@ -38,7 +38,7 @@ param(
     [string]$ApiKey
 )
 
-[array]$packages = if ($Force) { $Info.result.updated } else { $Info.result.pushed }
+[array]$packages = if ($BranchPerPackage -and -not $Force) { $Info.result.pushed } else { $Info.result.updated }
 if ($packages.Length -eq 0) { Write-Host "No package updated, skipping"; return }
 
 $ErrorActionPreference = "Stop"
