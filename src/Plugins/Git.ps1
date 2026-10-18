@@ -29,11 +29,15 @@ param(
     [string]$Branch = 'master',
 
     # Overwrite the remote branch (with lease) instead of merging it; for topic branches rebuilt on every run
-    [switch] $ForcePush
+    [switch] $ForcePush,
+
+    # Commit each package on its own "<Branch>-<package>" branch, for one pull request per package. Needs an atomic commit strategy.
+    [switch] $BranchPerPackage
 )
 
 [array]$packages = if ($Force) { $Info.result.updated } else { $Info.result.pushed }
 if ($packages.Length -eq 0) { Write-Host "No package updated, skipping"; return }
+if ($BranchPerPackage -and $commitStrategy -notlike 'atomic*') { throw "BranchPerPackage needs commitStrategy 'atomic' or 'atomictag'" }
 
 $root = Split-Path $packages[0].Path
 Push-Location $root
@@ -68,10 +72,15 @@ if ($User -and $Password) {
     Add-Content "$env:USERPROFILE\.git-credentials" "https://${Password}:x-oauth-basic@$machine`n"
 }
 
-Write-Host "Checking out & resetting $Branch branch"
-git checkout -q -B $Branch
+$startSha = git rev-parse HEAD
+$startRef = git symbolic-ref -q --short HEAD
 
-if ($ForcePush) {
+if (-not $BranchPerPackage) {
+    Write-Host "Checking out & resetting $Branch branch"
+    git checkout -q -B $Branch
+}
+
+if ($ForcePush -or $BranchPerPackage) {
     git fetch -q origin
 } else {
     Write-Host "Executing git pull"
@@ -86,6 +95,12 @@ if (-not $AddNew)
 
 if  ($commitStrategy -like 'atomic*') {
     $packages | ForEach-Object {
+        if ($BranchPerPackage) {
+            $packageBranch = "$Branch-$($_.Name)"
+            Write-Host "Checking out & resetting $packageBranch branch"
+            git checkout -q -B $packageBranch $startSha
+        }
+
         Write-Host "Adding update package to git repository: $($_.Name)"
         git add @gitAddArgs $_.Path
         git status
@@ -99,6 +114,10 @@ if  ($commitStrategy -like 'atomic*') {
         if ($commitStrategy -eq 'atomictag') {
           $tagcmd = "git tag -a $($_.Name)-$($_.RemoteVersion) -m '$($_.Name)-$($_.RemoteVersion)'"
           Invoke-Expression $tagcmd
+        }
+
+        if ($BranchPerPackage) {
+            git push -q --force-with-lease origin $packageBranch
         }
     }
 }
@@ -115,7 +134,9 @@ else {
 
 }
 Write-Host "Pushing changes"
-if ($ForcePush) {
+if ($BranchPerPackage) {
+    git checkout -q $(if ($startRef) { $startRef } else { $startSha })
+} elseif ($ForcePush) {
     git push -q --force-with-lease origin $Branch
 } else {
     git push -q origin $Branch

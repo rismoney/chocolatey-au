@@ -4,13 +4,20 @@
 
 .DESCRIPTION
     This plugin will open a Bitbucket pull request for the commits created by the Git plugin, which of course needs to run first.
-    It has an option to add reviewers to the created pull request.
+    It has an option to add reviewers to the created pull request, and can open one pull request per package
+    from the branches created by the Git plugin's BranchPerPackage option.
 #>
 param(
     $Info,
 
-    # Git branch to create a pull request for
+    # Git branch to create a pull request for; the branch prefix when BranchPerPackage is set
     [string]$Branch,
+
+    # Open one pull request per package from the "<Branch>-<package>" branches
+    [switch]$BranchPerPackage,
+
+    # Use updated packages instead of pushed ones; set it when the Git plugin runs with Force
+    [switch]$Force,
 
     # Target Git branch for the pull request
     [string]$BaseBranch = "master",
@@ -25,7 +32,8 @@ param(
     [string]$ApiKey
 )
 
-if ($Info.result.updated.Length -eq 0) { Write-Host "No package updated, skipping"; return }
+[array]$packages = if ($Force) { $Info.result.updated } else { $Info.result.pushed }
+if ($packages.Length -eq 0) { Write-Host "No package updated, skipping"; return }
 
 $ErrorActionPreference = "Stop"
 
@@ -55,32 +63,56 @@ if ($PSVersionTable.PSVersion.major -ge 6) {
 }
 
 $repository = @{ slug = $repoSlug; project = @{ key = $projectKey } }
-$updated = @($Info.result.updated)
-$title = if ($updated.Count -eq 1) {
-    "AU: $($updated[0].Name) upgraded from $($updated[0].NuspecVersion) to $($updated[0].RemoteVersion)"
+
+$pullRequests = if ($BranchPerPackage) {
+    $packages | ForEach-Object {
+        @{
+            Branch      = "$Branch-$($_.Name)"
+            Title       = "AU: $($_.Name) upgraded from $($_.NuspecVersion) to $($_.RemoteVersion)"
+            Description = "* $($_.Name): $($_.NuspecVersion) -> $($_.RemoteVersion)"
+        }
+    }
 } else {
-    "AU: $($updated.Count) packages updated"
-}
-$data = @{
-    title       = $title
-    description = ($updated | ForEach-Object { "* $($_.Name): $($_.NuspecVersion) -> $($_.RemoteVersion)" }) -join "`n"
-    state       = 'OPEN'
-    fromRef     = @{ id = "refs/heads/$Branch"; repository = $repository }
-    toRef       = @{ id = "refs/heads/$BaseBranch"; repository = $repository }
-}
-if ($Reviewers) {
-    $data.reviewers = @($Reviewers | ForEach-Object { @{ user = @{ name = $_ } } })
+    @{
+        Branch      = $Branch
+        Title       = if ($packages.Count -eq 1) {
+            "AU: $($packages[0].Name) upgraded from $($packages[0].NuspecVersion) to $($packages[0].RemoteVersion)"
+        } else {
+            "AU: $($packages.Count) packages updated"
+        }
+        Description = ($packages | ForEach-Object { "* $($_.Name): $($_.NuspecVersion) -> $($_.RemoteVersion)" }) -join "`n"
+    }
 }
 
-$params = @{
-    ContentType     = 'application/json'
-    Method          = 'POST'
-    Uri             = "$BaseUrl/rest/api/1.0/projects/$projectKey/repos/$repoSlug/pull-requests"
-    Body            = $data | ConvertTo-Json -Depth 6
-    UseBasicParsing = $true
-    Headers         = @{ 'Authorization' = "Bearer $ApiKey" }
-}
-$response = Invoke-WebRequest @params
-$prUrl = ($response.Content | ConvertFrom-Json).links.self[0].href
+$failed = @()
+foreach ($pr in $pullRequests) {
+    $data = @{
+        title       = $pr.Title
+        description = $pr.Description
+        state       = 'OPEN'
+        fromRef     = @{ id = "refs/heads/$($pr.Branch)"; repository = $repository }
+        toRef       = @{ id = "refs/heads/$BaseBranch"; repository = $repository }
+    }
+    if ($Reviewers) {
+        $data.reviewers = @($Reviewers | ForEach-Object { @{ user = @{ name = $_ } } })
+    }
 
-Write-Host "Pull request successfully created: $prUrl"
+    $params = @{
+        ContentType     = 'application/json'
+        Method          = 'POST'
+        Uri             = "$BaseUrl/rest/api/1.0/projects/$projectKey/repos/$repoSlug/pull-requests"
+        Body            = $data | ConvertTo-Json -Depth 6
+        UseBasicParsing = $true
+        Headers         = @{ 'Authorization' = "Bearer $ApiKey" }
+    }
+    try {
+        $response = Invoke-WebRequest @params
+        $prUrl = ($response.Content | ConvertFrom-Json).links.self[0].href
+        Write-Host "Pull request successfully created: $prUrl"
+    } catch {
+        Write-Host "Failed to create pull request for $($pr.Branch): $_"
+        $failed += $pr.Branch
+    }
+}
+
+if ($failed) { throw "Pull request creation failed for: $($failed -join ', ')" }
