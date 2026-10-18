@@ -91,6 +91,7 @@ Set `BranchPerPackage` to open one pull request per package from the `<Branch>-<
 The plugin will open a Bitbucket Server / Data Center pull request for the commits created by the Git plugin, which of course needs to run first.
 Authenticates with an HTTP access token (`ApiKey`) and can add reviewers. `BaseUrl` is derived from an HTTPS origin remote when not specified.
 By default one pull request is opened from `Branch` for all packages. Set `BranchPerPackage` to open one pull request per package from the `<Branch>-<package>` branches created by the Git plugin, and `Force` when the Git plugin also runs with `Force`.
+If a pull request is already open for a branch, its title and description are refreshed instead of failing.
 
 ## [Report](src/Plugins/Report.ps1)
 

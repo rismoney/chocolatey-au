@@ -106,9 +106,22 @@ foreach ($pr in $pullRequests) {
         Headers         = @{ 'Authorization' = "Bearer $ApiKey" }
     }
     try {
-        $response = Invoke-WebRequest @params
-        $prUrl = ($response.Content | ConvertFrom-Json).links.self[0].href
-        Write-Host "Pull request successfully created: $prUrl"
+        try {
+            $response = Invoke-WebRequest @params
+            $prUrl = ($response.Content | ConvertFrom-Json).links.self[0].href
+            Write-Host "Pull request successfully created: $prUrl"
+        } catch {
+            $apiError = try { ($_.ErrorDetails.Message | ConvertFrom-Json).errors[0] } catch { $null }
+            if ($apiError.exceptionName -notlike '*DuplicatePullRequestException') { throw }
+
+            # The branch was force-pushed, so the open pull request already holds the new commits; refresh its text.
+            $open = $apiError.existingPullRequest
+            $params['Method'] = 'PUT'
+            $params['Uri'] = "$($params['Uri'])/$($open.id)"
+            $params['Body'] = @{ version = $open.version; title = $pr.Title; description = $pr.Description } | ConvertTo-Json
+            [void](Invoke-WebRequest @params)
+            Write-Host "Pull request already open, updated: $($open.links.self[0].href)"
+        }
     } catch {
         Write-Host "Failed to create pull request for $($pr.Branch): $_"
         $failed += $pr.Branch
