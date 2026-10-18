@@ -82,6 +82,7 @@ This plugin requires Git plugin and that clone is done with adequate depth.
 
 The plugin will open a GitHub pull request for the commits created by the Git plugin, which of course needs to run first.
 It has options to add assignees and reviewers to the created pull request and, supports on-prem GitHub Enterprise Server.
+Set `BranchPerPackage` to open one pull request per package from the `<Branch>-<package>` branches created by the Git plugin's `BranchPerPackage` option, and `Force` when the Git plugin also runs with `Force`.
 
 ## [PullRequestBitbucket](src/Plugins/PullRequestBitbucket.ps1)
 
