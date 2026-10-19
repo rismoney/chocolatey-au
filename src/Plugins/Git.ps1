@@ -35,6 +35,13 @@ param(
     [switch] $BranchPerPackage
 )
 
+# Local scope only: git writes progress and server "remote:" lines to stderr, which 'Stop' would turn into a terminating error.
+function Invoke-Git {
+    $ErrorActionPreference = 'Continue'
+    git @args
+    if ($LASTEXITCODE -ne 0) { throw "git $args failed with exit code $LASTEXITCODE" }
+}
+
 [array]$packages = if ($Force) { $Info.result.updated } else { $Info.result.pushed }
 if ($packages.Length -eq 0) { Write-Host "No package updated, skipping"; return }
 if ($BranchPerPackage -and $commitStrategy -notlike 'atomic*') { throw "BranchPerPackage needs commitStrategy 'atomic' or 'atomictag'" }
@@ -77,14 +84,14 @@ $startRef = git symbolic-ref -q --short HEAD
 
 if (-not $BranchPerPackage) {
     Write-Host "Checking out & resetting $Branch branch"
-    git checkout -q -B $Branch
+    Invoke-Git checkout -q -B $Branch
 }
 
 if ($ForcePush -or $BranchPerPackage) {
-    git fetch -q origin
+    Invoke-Git fetch -q origin
 } else {
     Write-Host "Executing git pull"
-    git pull -q origin $Branch
+    Invoke-Git pull -q origin $Branch
 }
 
 $gitAddArgs = @()
@@ -94,55 +101,64 @@ if (-not $AddNew)
 }
 
 if  ($commitStrategy -like 'atomic*') {
+    $failedPushes = @()
     $packages | ForEach-Object {
+        $package = $_
         if ($BranchPerPackage) {
             $packageBranch = "$Branch-$($_.Name)"
             Write-Host "Checking out & resetting $packageBranch branch"
-            git checkout -q -B $packageBranch $startSha
+            Invoke-Git checkout -q -B $packageBranch $startSha
         }
 
         Write-Host "Adding update package to git repository: $($_.Name)"
-        git add @gitAddArgs $_.Path
+        Invoke-Git add @gitAddArgs $_.Path
         git status
 
         Write-Host "Commiting $($_.Name)"
         $message = "AU: $($_.Name) upgraded from $($_.NuspecVersion) to $($_.RemoteVersion)"
         $gist_url = $Info.plugin_results.Gist -split '\n' | Select-Object -Last 1
         $snippet_url = $Info.plugin_results.Snippet -split '\n' | Select-Object -Last 1
-        git commit -m "$message`n[skip ci] $gist_url $snippet_url" --allow-empty
+        Invoke-Git commit -m "$message`n[skip ci] $gist_url $snippet_url" --allow-empty
 
         if ($commitStrategy -eq 'atomictag') {
-          $tagcmd = "git tag -a $($_.Name)-$($_.RemoteVersion) -m '$($_.Name)-$($_.RemoteVersion)'"
-          Invoke-Expression $tagcmd
+          Invoke-Git tag -a "$($_.Name)-$($_.RemoteVersion)" -m "$($_.Name)-$($_.RemoteVersion)"
         }
 
         if ($BranchPerPackage) {
-            git push -q --force-with-lease origin $packageBranch
+            # A rejected push must not stop the remaining packages; failures are reported after the loop.
+            try {
+                Invoke-Git push -q --force-with-lease origin $packageBranch
+            } catch {
+                Write-Host "Push failed for $($package.Name): $_"
+                $failedPushes += $package.Name
+                if ($commitStrategy -eq 'atomictag') { git tag -d "$($package.Name)-$($package.RemoteVersion)" | Out-Null }
+            }
         }
     }
 }
 else {
     Write-Host "Adding updated packages to git repository: $( $packages | % Name)"
-    $packages | ForEach-Object { git add @gitAddArgs $_.Path }
+    $packages | ForEach-Object { Invoke-Git add @gitAddArgs $_.Path }
     git status
 
     Write-Host "Commiting"
     $message = "AU: $($packages.Length) updated - $($packages | % Name)"
     $gist_url = $Info.plugin_results.Gist -split '\n' | Select-Object -Last 1
     $snippet_url = $Info.plugin_results.Snippet -split '\n' | Select-Object -Last 1
-    git commit -m "$message`n[skip ci] $gist_url $snippet_url" --allow-empty
+    Invoke-Git commit -m "$message`n[skip ci] $gist_url $snippet_url" --allow-empty
 
 }
 Write-Host "Pushing changes"
 if ($BranchPerPackage) {
-    git checkout -q $(if ($startRef) { $startRef } else { $startSha })
+    Invoke-Git checkout -q $(if ($startRef) { $startRef } else { $startSha })
 } elseif ($ForcePush) {
-    git push -q --force-with-lease origin $Branch
+    Invoke-Git push -q --force-with-lease origin $Branch
 } else {
-    git push -q origin $Branch
+    Invoke-Git push -q origin $Branch
 }
 if ($commitStrategy -eq 'atomictag') {
     write-host 'Atomic Tag Push'
-    git push -q --tags
+    Invoke-Git push -q --tags
 }
 Pop-Location
+if ($failedPushes) { throw "Git push failed for: $($failedPushes -join ', ')" }
